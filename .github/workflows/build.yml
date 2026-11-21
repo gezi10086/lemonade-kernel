@@ -1,6 +1,4 @@
 name: build-kernel
-# 一加 9 (lemonade) / LineageOS 23.2 / 5.4.302 + Droidspaces 补丁
-# 用法：Actions -> build-kernel -> Run workflow -> 40~70 分钟 -> 下载 Artifact
 
 on:
   workflow_dispatch:
@@ -8,58 +6,82 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - name: 1. 腾出磁盘空间
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
           df -h / | tail -1
 
-      - name: 2. 安装编译依赖
+      - name: 2. 安装依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio rsync clang lld llvm
-          echo "--- toolchain ---"
-          clang --version | head -1
-          ld.lld --version | head -1
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio rsync clang lld llvm zstd
           for t in ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip clang; do
-            command -v $t || { echo "缺少 $t"; exit 1; }
+            command -v $t || echo "警告：缺少 $t"
           done
+          clang --version | head -2
 
-      - name: 3. 拉取内核源码
+      - name: 3. 尝试获取 AOSP clang r563880（与设备内核同版本）
         run: |
-          git clone --depth 1 -b lineage-23.2 https://github.com/Gamesmes90/android_kernel_oneplus_sm8350.git k
+          BASE="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+          mkdir -p "$HOME/tc"
+          GOT=""
+          for REF in main android16-release android16-qpr1-release android15-release; do
+            echo "--- 尝试 $REF ---"
+            curl -fsSL "$BASE/+/refs/heads/$REF?format=JSON" -o /tmp/list.json 2>/dev/null || { echo "取不到列表"; continue; }
+            sed -i "1s/^)]}'//" /tmp/list.json
+            DIR=$(grep -o '"clang-r563880[a-z]*"' /tmp/list.json | head -1 | tr -d '"')
+            [ -z "$DIR" ] && DIR=$(grep -o '"clang-r5[0-9]*"' /tmp/list.json | sort -u | tail -1 | tr -d '"')
+            echo "候选目录: ${DIR:-无}"
+            [ -z "$DIR" ] && continue
+            if curl -fsSL "$BASE/+archive/refs/heads/$REF/$DIR.tar.gz" -o /tmp/tc.tar.gz && tar xzf /tmp/tc.tar.gz -C "$HOME/tc"; then
+              GOT="$HOME/tc"
+              echo "已解压 $DIR"
+              break
+            fi
+          done
+          if [ -n "$GOT" ] && [ -x "$GOT/bin/clang" ]; then
+            echo "TOOLCHAIN=$GOT" >> "$GITHUB_ENV"
+            "$GOT/bin/clang" --version | head -1
+          else
+            echo "没拿到 AOSP 工具链，回退系统 clang"; clang --version | head -1
+          fi
+
+      - name: 4. 拉取源码（android-16，与你内核同源，保留 KSU/SUSFS）
+        run: |
+          git clone --depth 1 -b android-16 https://github.com/Gamesmes90/android_kernel_oneplus_sm8350.git k
           cd k
           git log --oneline -1
           grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL) =" Makefile
+          echo -n "defconfig 里 KSU 相关行数: "; grep -c "CONFIG_KSU" arch/arm64/configs/vendor/lahaina-qgki_defconfig
 
-      - name: 4. 打 Droidspaces 补丁
+      - name: 5. 打 Droidspaces 补丁
         run: |
           cd k
           cat > /tmp/ds.patch <<'PATCH_EOF'
           diff --git a/arch/arm64/configs/vendor/lahaina-qgki_defconfig b/arch/arm64/configs/vendor/lahaina-qgki_defconfig
-          index 44b37a247..36812e80f 100644
+          index 60660d94a..f25580d55 100644
           --- a/arch/arm64/configs/vendor/lahaina-qgki_defconfig
           +++ b/arch/arm64/configs/vendor/lahaina-qgki_defconfig
-          @@ -982,3 +982,13 @@ CONFIG_CORESIGHT_HWEVENT=y
-           CONFIG_CORESIGHT_DUMMY=y
-           CONFIG_CORESIGHT_REMOTE_ETM=y
-           CONFIG_CORESIGHT_TGU=y
+          @@ -1034,3 +1034,12 @@ CONFIG_HZ=250
+           CONFIG_CRYPTO_LZO=y
+           CONFIG_LZO_COMPRESS=y
+           CONFIG_LZO_DECOMPRESS=y
           +
           +#
           +# Droidspaces: base container support (minimal set)
-          +# Only the four options Droidspaces needs to start a container.
-          +# Requires the two kABI padding hunks in include/linux/sched*.h (same patch).
+          +# 只开 Droidspaces 启动容器必需的四个选项
           +#
           +CONFIG_SYSVIPC=y
           +CONFIG_IPC_NS=y
           +CONFIG_PID_NS=y
           +CONFIG_POSIX_MQUEUE=y
           diff --git a/include/linux/sched.h b/include/linux/sched.h
-          index eb066485d..8b127ce8c 100644
+          index ead16db8e..c29489857 100644
           --- a/include/linux/sched.h
           +++ b/include/linux/sched.h
-          @@ -1088,8 +1088,8 @@ struct task_struct {
+          @@ -1098,8 +1098,8 @@ struct task_struct {
            	struct nameidata		*nameidata;
            
            #ifdef CONFIG_SYSVIPC
@@ -70,7 +92,7 @@ jobs:
            #endif
            #ifdef CONFIG_DETECT_HUNG_TASK
            	/* hung task detection */
-          @@ -1479,9 +1479,15 @@ struct task_struct {
+          @@ -1489,9 +1489,15 @@ struct task_struct {
            	ANDROID_KABI_RESERVE(3);
            	ANDROID_KABI_RESERVE(4);
            	ANDROID_KABI_RESERVE(5);
@@ -116,40 +138,48 @@ jobs:
           git apply /tmp/ds.patch
           grep -E "^CONFIG_(SYSVIPC|IPC_NS|PID_NS|POSIX_MQUEUE)=y" arch/arm64/configs/vendor/lahaina-qgki_defconfig | sort -u
 
-      - name: 5. 生成配置并锁定内核版本号
+      - name: 6. 生成配置 + 锁定版本号
         run: |
           export LOCALVERSION=
+          [ -n "${TOOLCHAIN:-}" ] && export PATH="$TOOLCHAIN/bin:$PATH"
           cd k
           cat >> arch/arm64/configs/vendor/lahaina-qgki_defconfig <<'CFG_EOF'
 
-          # 锁定 release 字符串：必须与设备现有内核完全一致，否则厂商模块 vermagic 校验失败
+          # 锁定 release：必须与设备现有内核一致，否则厂商模块 vermagic 校验失败
           CONFIG_LOCALVERSION="-qgki-gf817ef05c1c2"
           # CONFIG_LOCALVERSION_AUTO is not set
           CFG_EOF
           make O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
-          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE; do
+          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE KSU KSU_SUSFS; do
             grep -q "^CONFIG_${o}=y" out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
           done
-          grep -E "^CONFIG_LOCALVERSION" out/.config
+          grep -E "^CONFIG_(LOCALVERSION|KSU=|KSU_SUSFS=)" out/.config
           make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
           REL=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)
           echo "kernelrelease = $REL"
           [ "$REL" = "5.4.302-qgki-gf817ef05c1c2" ] || { echo "版本号不对，停止"; exit 1; }
 
-      - name: 6. 编译 Image
+      - name: 7. 编译 Image
         run: |
           export LOCALVERSION=
-          make -C k O=out ARCH=arm64 LLVM=1 KCFLAGS="-Wno-error" -j"$(nproc)" Image 2>&1 | tail -60
+          [ -n "${TOOLCHAIN:-}" ] && export PATH="$TOOLCHAIN/bin:$PATH"
+          make -C k O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image 2>&1 | tail -60
 
-      - name: 7. 校验
+      - name: 8. 校验并打包产物
         run: |
           IMG=k/out/arch/arm64/boot/Image
           ls -lh "$IMG"
           sha256sum "$IMG"
           strings -a "$IMG" | grep -m1 "^Linux version"
-          strings -a "$IMG" | grep -q "5.4.302-qgki-gf817ef05c1c2" || { echo "内核版本号不对，模块会拒载"; exit 1; }
+          strings -a "$IMG" | grep -q "5.4.302-qgki-gf817ef05c1c2" || { echo "版本号不对，模块会拒载"; exit 1; }
+          mkdir -p dist
+          cp "$IMG" dist/Image
+          cp k/out/.config dist/config.built
+          [ -f k/out/Module.symvers ] && cp k/out/Module.symvers dist/
+          clang --version > dist/clang.txt
+          ls -lh dist
       - uses: actions/upload-artifact@v4
         with:
-          name: kernel-Image
-          path: k/out/arch/arm64/boot/Image
+          name: kernel-dist
+          path: dist/
           retention-days: 7
