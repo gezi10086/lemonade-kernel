@@ -18,8 +18,7 @@ jobs:
       - name: 2. 安装编译依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio rsync \
-            clang lld llvm
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio rsync clang lld llvm
           echo "--- toolchain ---"
           clang --version | head -1
           ld.lld --version | head -1
@@ -29,8 +28,7 @@ jobs:
 
       - name: 3. 拉取内核源码
         run: |
-          git clone --depth 1 -b lineage-23.2 \
-            https://github.com/Gamesmes90/android_kernel_oneplus_sm8350.git k
+          git clone --depth 1 -b lineage-23.2 https://github.com/Gamesmes90/android_kernel_oneplus_sm8350.git k
           cd k
           git log --oneline -1
           grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL) =" Makefile
@@ -39,80 +37,80 @@ jobs:
         run: |
           cd k
           cat > /tmp/ds.patch <<'PATCH_EOF'
-          diff --git a/arch/arm64/configs/vendor/lahaina-qgki_defconfig b/arch/arm64/configs/vendor/lahaina-qgki_defconfig
-          index 44b37a247..36812e80f 100644
-          --- a/arch/arm64/configs/vendor/lahaina-qgki_defconfig
-          +++ b/arch/arm64/configs/vendor/lahaina-qgki_defconfig
-          @@ -982,3 +982,13 @@ CONFIG_CORESIGHT_HWEVENT=y
-           CONFIG_CORESIGHT_DUMMY=y
-           CONFIG_CORESIGHT_REMOTE_ETM=y
-           CONFIG_CORESIGHT_TGU=y
-          +
-          +#
-          +# Droidspaces: base container support (minimal set)
-          +# Only the four options Droidspaces needs to start a container.
-          +# Requires the two kABI padding hunks in include/linux/sched*.h (same patch).
-          +#
-          +CONFIG_SYSVIPC=y
-          +CONFIG_IPC_NS=y
-          +CONFIG_PID_NS=y
-          +CONFIG_POSIX_MQUEUE=y
-          diff --git a/include/linux/sched.h b/include/linux/sched.h
-          index eb066485d..8b127ce8c 100644
-          --- a/include/linux/sched.h
-          +++ b/include/linux/sched.h
-          @@ -1088,8 +1088,8 @@ struct task_struct {
-           	struct nameidata		*nameidata;
-           
-           #ifdef CONFIG_SYSVIPC
-          -	struct sysv_sem			sysvsem;
-          -	struct sysv_shm			sysvshm;
-          +	// struct sysv_sem			sysvsem;
-          +	// struct sysv_shm			sysvshm;
-           #endif
-           #ifdef CONFIG_DETECT_HUNG_TASK
-           	/* hung task detection */
-          @@ -1479,9 +1479,15 @@ struct task_struct {
-           	ANDROID_KABI_RESERVE(3);
-           	ANDROID_KABI_RESERVE(4);
-           	ANDROID_KABI_RESERVE(5);
-          +
-          +#ifdef CONFIG_SYSVIPC
-          +	ANDROID_KABI_USE(6, struct sysv_sem sysvsem);
-          +	_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(7); ANDROID_KABI_RESERVE(8), struct sysv_shm sysvshm);
-          +#else
-           	ANDROID_KABI_RESERVE(6);
-           	ANDROID_KABI_RESERVE(7);
-           	ANDROID_KABI_RESERVE(8);
-          +#endif
-           
-           	/*
-           	 * New fields for task_struct should be added above here, so that
-          diff --git a/include/linux/sched/user.h b/include/linux/sched/user.h
-          index 573b448e0..391451665 100644
-          --- a/include/linux/sched/user.h
-          +++ b/include/linux/sched/user.h
-          @@ -23,7 +23,7 @@ struct user_struct {
-           #endif
-           #ifdef CONFIG_POSIX_MQUEUE
-           	/* protected by mq_lock	*/
-          -	unsigned long mq_bytes;	/* How many bytes can be allocated to mqueue? */
-          +	// unsigned long mq_bytes;	/* How many bytes can be allocated to mqueue? */
-           #endif
-           	unsigned long locked_shm; /* How many pages of mlocked shm ? */
-           	unsigned long unix_inflight;	/* How many files in flight in unix sockets */
-          @@ -41,7 +41,11 @@ struct user_struct {
-           	/* Miscellaneous per-user rate limit */
-           	struct ratelimit_state ratelimit;
-           
-          +#ifdef CONFIG_POSIX_MQUEUE
-          +	ANDROID_KABI_USE(1, unsigned long mq_bytes);
-          +#else
-           	ANDROID_KABI_RESERVE(1);
-          +#endif
-           	ANDROID_KABI_RESERVE(2);
-           };
-           
+                    diff --git a/arch/arm64/configs/vendor/lahaina-qgki_defconfig b/arch/arm64/configs/vendor/lahaina-qgki_defconfig
+                    index 44b37a247..36812e80f 100644
+                    --- a/arch/arm64/configs/vendor/lahaina-qgki_defconfig
+                    +++ b/arch/arm64/configs/vendor/lahaina-qgki_defconfig
+                    @@ -982,3 +982,13 @@ CONFIG_CORESIGHT_HWEVENT=y
+                     CONFIG_CORESIGHT_DUMMY=y
+                     CONFIG_CORESIGHT_REMOTE_ETM=y
+                     CONFIG_CORESIGHT_TGU=y
+                    +
+                    +#
+                    +# Droidspaces: base container support (minimal set)
+                    +# Only the four options Droidspaces needs to start a container.
+                    +# Requires the two kABI padding hunks in include/linux/sched*.h (same patch).
+                    +#
+                    +CONFIG_SYSVIPC=y
+                    +CONFIG_IPC_NS=y
+                    +CONFIG_PID_NS=y
+                    +CONFIG_POSIX_MQUEUE=y
+                    diff --git a/include/linux/sched.h b/include/linux/sched.h
+                    index eb066485d..8b127ce8c 100644
+                    --- a/include/linux/sched.h
+                    +++ b/include/linux/sched.h
+                    @@ -1088,8 +1088,8 @@ struct task_struct {
+                     	struct nameidata		*nameidata;
+                     
+                     #ifdef CONFIG_SYSVIPC
+                    -	struct sysv_sem			sysvsem;
+                    -	struct sysv_shm			sysvshm;
+                    +	// struct sysv_sem			sysvsem;
+                    +	// struct sysv_shm			sysvshm;
+                     #endif
+                     #ifdef CONFIG_DETECT_HUNG_TASK
+                     	/* hung task detection */
+                    @@ -1479,9 +1479,15 @@ struct task_struct {
+                     	ANDROID_KABI_RESERVE(3);
+                     	ANDROID_KABI_RESERVE(4);
+                     	ANDROID_KABI_RESERVE(5);
+                    +
+                    +#ifdef CONFIG_SYSVIPC
+                    +	ANDROID_KABI_USE(6, struct sysv_sem sysvsem);
+                    +	_ANDROID_KABI_REPLACE(ANDROID_KABI_RESERVE(7); ANDROID_KABI_RESERVE(8), struct sysv_shm sysvshm);
+                    +#else
+                     	ANDROID_KABI_RESERVE(6);
+                     	ANDROID_KABI_RESERVE(7);
+                     	ANDROID_KABI_RESERVE(8);
+                    +#endif
+                     
+                     	/*
+                     	 * New fields for task_struct should be added above here, so that
+                    diff --git a/include/linux/sched/user.h b/include/linux/sched/user.h
+                    index 573b448e0..391451665 100644
+                    --- a/include/linux/sched/user.h
+                    +++ b/include/linux/sched/user.h
+                    @@ -23,7 +23,7 @@ struct user_struct {
+                     #endif
+                     #ifdef CONFIG_POSIX_MQUEUE
+                     	/* protected by mq_lock	*/
+                    -	unsigned long mq_bytes;	/* How many bytes can be allocated to mqueue? */
+                    +	// unsigned long mq_bytes;	/* How many bytes can be allocated to mqueue? */
+                     #endif
+                     	unsigned long locked_shm; /* How many pages of mlocked shm ? */
+                     	unsigned long unix_inflight;	/* How many files in flight in unix sockets */
+                    @@ -41,7 +41,11 @@ struct user_struct {
+                     	/* Miscellaneous per-user rate limit */
+                     	struct ratelimit_state ratelimit;
+                     
+                    +#ifdef CONFIG_POSIX_MQUEUE
+                    +	ANDROID_KABI_USE(1, unsigned long mq_bytes);
+                    +#else
+                     	ANDROID_KABI_RESERVE(1);
+                    +#endif
+                     	ANDROID_KABI_RESERVE(2);
+                     };
+                     
           PATCH_EOF
           git apply --check /tmp/ds.patch
           git apply /tmp/ds.patch
@@ -121,15 +119,20 @@ jobs:
       - name: 5. 生成配置并锁定内核版本号
         run: |
           export LOCALVERSION=
-          make -C k O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
+          cd k
+          cat >> arch/arm64/configs/vendor/lahaina-qgki_defconfig <<'CFG_EOF'
+
+          # 锁定 release 字符串：必须与设备现有内核完全一致，否则厂商模块 vermagic 校验失败
+          CONFIG_LOCALVERSION="-qgki-gf817ef05c1c2"
+          # CONFIG_LOCALVERSION_AUTO is not set
+          CFG_EOF
+          make O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
           for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE; do
-            grep -q "^CONFIG_${o}=y" k/out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
+            grep -q "^CONFIG_${o}=y" out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
           done
-          # 关键：让内核 release 与设备现有内核完全一致，否则厂商模块会因 vermagic 不符拒绝加载
-          k/scripts/config --file k/out/.config --set-str LOCALVERSION "-qgki-gf817ef05c1c2"
-          k/scripts/config --file k/out/.config --disable LOCALVERSION_AUTO
-          make -C k O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
-          REL=$(make -s -C k O=out ARCH=arm64 kernelrelease)
+          grep -E "^CONFIG_LOCALVERSION" out/.config
+          make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
+          REL=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)
           echo "kernelrelease = $REL"
           [ "$REL" = "5.4.302-qgki-gf817ef05c1c2" ] || { echo "版本号不对，停止"; exit 1; }
 
@@ -144,9 +147,7 @@ jobs:
           ls -lh "$IMG"
           sha256sum "$IMG"
           strings -a "$IMG" | grep -m1 "^Linux version"
-          strings -a "$IMG" | grep -q "5.4.302-qgki-gf817ef05c1c2" \
-            || { echo "内核版本号不对，模块会拒载"; exit 1; }
-
+          strings -a "$IMG" | grep -q "5.4.302-qgki-gf817ef05c1c2" || { echo "内核版本号不对，模块会拒载"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: kernel-Image
