@@ -1,6 +1,6 @@
 name: build-kernel
-# 一键编译：一加 9 (lemonade) / LineageOS 23.2 / 5.4.302 + Droidspaces 补丁
-# 用法：仓库 Actions 标签 -> build-kernel -> Run workflow -> 等 40~70 分钟 -> 下载 Artifact
+# 一加 9 (lemonade) / LineageOS 23.2 / 5.4.302 + Droidspaces 补丁
+# 用法：Actions -> build-kernel -> Run workflow -> 40~70 分钟 -> 下载 Artifact
 
 on:
   workflow_dispatch:
@@ -18,9 +18,14 @@ jobs:
       - name: 2. 安装编译依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio rsync \
+            clang lld llvm
+          echo "--- toolchain ---"
           clang --version | head -1
           ld.lld --version | head -1
+          for t in ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip clang; do
+            command -v $t || { echo "缺少 $t"; exit 1; }
+          done
 
       - name: 3. 拉取内核源码
         run: |
@@ -113,24 +118,34 @@ jobs:
           git apply /tmp/ds.patch
           grep -E "^CONFIG_(SYSVIPC|IPC_NS|PID_NS|POSIX_MQUEUE)=y" arch/arm64/configs/vendor/lahaina-qgki_defconfig | sort -u
 
-      - name: 5. 生成配置
+      - name: 5. 生成配置并锁定内核版本号
         run: |
+          export LOCALVERSION=
           make -C k O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
           for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE; do
             grep -q "^CONFIG_${o}=y" k/out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
           done
-          echo "四个必需项全部生效"
+          # 关键：让内核 release 与设备现有内核完全一致，否则厂商模块会因 vermagic 不符拒绝加载
+          k/scripts/config --file k/out/.config --set-str LOCALVERSION "-qgki-gf817ef05c1c2"
+          k/scripts/config --file k/out/.config --disable LOCALVERSION_AUTO
+          make -C k O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
+          REL=$(make -s -C k O=out ARCH=arm64 kernelrelease)
+          echo "kernelrelease = $REL"
+          [ "$REL" = "5.4.302-qgki-gf817ef05c1c2" ] || { echo "版本号不对，停止"; exit 1; }
 
       - name: 6. 编译 Image
         run: |
-          make -C k O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image 2>&1 | tail -50
+          export LOCALVERSION=
+          make -C k O=out ARCH=arm64 LLVM=1 KCFLAGS="-Wno-error" -j"$(nproc)" Image 2>&1 | tail -60
 
-      - name: 7. 校验并上传
+      - name: 7. 校验
         run: |
           IMG=k/out/arch/arm64/boot/Image
           ls -lh "$IMG"
           sha256sum "$IMG"
           strings -a "$IMG" | grep -m1 "^Linux version"
+          strings -a "$IMG" | grep -q "5.4.302-qgki-gf817ef05c1c2" \
+            || { echo "内核版本号不对，模块会拒载"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
