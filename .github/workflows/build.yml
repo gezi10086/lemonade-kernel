@@ -23,20 +23,21 @@ jobs:
           done
           clang --version | head -2
 
-      - name: 3. 尝试 AOSP clang r563880
+      - name: 3. 下载 AOSP clang r563880c（与设备内核完全同版本）
         run: |
           BASE="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
           mkdir -p "$HOME/tc"
-          for REF in main android16-release android15-release; do
-            curl -fsSL "$BASE/+/refs/heads/$REF?format=JSON" -o /tmp/list.json 2>/dev/null || continue
-            sed -i "1s/^)]}'//" /tmp/list.json
-            DIR=$(grep -o '"clang-r563880[a-z]*"' /tmp/list.json | head -1 | tr -d '"')
-            [ -z "$DIR" ] && continue
-            if curl -fsSL "$BASE/+archive/refs/heads/$REF/$DIR.tar.gz" -o /tmp/tc.tar.gz && tar xzf /tmp/tc.tar.gz -C "$HOME/tc"; then
-              echo "TOOLCHAIN=$HOME/tc" >> "$GITHUB_ENV"; echo "拿到 $DIR"; break
-            fi
-          done
-          [ -n "${TOOLCHAIN:-}" ] && "$TOOLCHAIN/bin/clang" --version | head -1 || echo "回退系统 clang"
+          URL="$BASE/+archive/refs/heads/android17-release/clang-r563880c.tar.gz"
+          echo "下载 $URL"
+          if curl -fSL --retry 3 --retry-delay 5 --max-time 900 "$URL" -o /tmp/tc.tar.gz; then
+            echo "解压 ..."
+            tar xzf /tmp/tc.tar.gz -C "$HOME/tc"
+            echo "TOOLCHAIN=$HOME/tc" >> "$GITHUB_ENV"
+            "$HOME/tc/bin/clang" --version | head -1
+          else
+            echo "!! 下载失败，回退系统 clang"
+            clang --version | head -1
+          fi
 
       - name: 4. 拉取源码（android-16）
         run: |
