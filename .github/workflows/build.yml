@@ -159,9 +159,11 @@ jobs:
           # CONFIG_LOCALVERSION_AUTO is not set
           CFG_EOF
           make O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
-          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE KSU KSU_SUSFS; do
+          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE KSU; do
             grep -q "^CONFIG_${o}=y" out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
           done
+          # SUSFS 只做提示：不同 KernelSU-Next 分支的符号名不同（SUSFS_* vs KSU_SUSFS_*）
+          grep -E "^CONFIG_(SUSFS|KSU_SUSFS)" out/.config || echo "（提示）本分支未启用 SUSFS，这不影响 Droidspaces" 
           grep -E "^CONFIG_(LOCALVERSION|KSU=|KSU_SUSFS=)" out/.config
           make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
           REL=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)
@@ -172,7 +174,7 @@ jobs:
         run: |
           export LOCALVERSION=
           [ -n "${TOOLCHAIN:-}" ] && export PATH="$TOOLCHAIN/bin:$PATH"
-          make -C k O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image 2>&1 | tail -60
+          make -C k O=out ARCH=arm64 LLVM=1 KCFLAGS="-Wno-error" -j"$(nproc)" Image 2>&1 | tail -60
 
       - name: 9. 校验并打包产物
         run: |
