@@ -56,7 +56,16 @@ jobs:
           grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL) =" Makefile
           echo -n "defconfig 里 KSU 相关行数: "; grep -c "CONFIG_KSU" arch/arm64/configs/vendor/lahaina-qgki_defconfig
 
-      - name: 5. 打 Droidspaces 补丁
+      - name: 4.5 初始化 KernelSU（仓库里的 drivers/kernelsu 是指向 KernelSU-Next 的软链）
+        run: |
+          cd k
+          ls -l drivers/kernelsu || true
+          chmod +x init_ksu.sh
+          bash ./init_ksu.sh susfs || { echo "susfs 变体失败，改用默认变体"; bash ./init_ksu.sh; }
+          echo "--- 结果 ---"
+          ls -l drivers/kernelsu/Kconfig || { echo "KernelSU 未初始化，Kconfig 会报 can't open drivers/kernelsu/Kconfig"; exit 1; }
+          grep -c kernelsu drivers/Makefile || true
+      - name: 6. 打 Droidspaces 补丁
         run: |
           cd k
           cat > /tmp/ds.patch <<'PATCH_EOF'
@@ -138,7 +147,7 @@ jobs:
           git apply /tmp/ds.patch
           grep -E "^CONFIG_(SYSVIPC|IPC_NS|PID_NS|POSIX_MQUEUE)=y" arch/arm64/configs/vendor/lahaina-qgki_defconfig | sort -u
 
-      - name: 6. 生成配置 + 锁定版本号
+      - name: 7. 生成配置 + 锁定版本号
         run: |
           export LOCALVERSION=
           [ -n "${TOOLCHAIN:-}" ] && export PATH="$TOOLCHAIN/bin:$PATH"
@@ -159,13 +168,13 @@ jobs:
           echo "kernelrelease = $REL"
           [ "$REL" = "5.4.302-qgki-gf817ef05c1c2" ] || { echo "版本号不对，停止"; exit 1; }
 
-      - name: 7. 编译 Image
+      - name: 8. 编译 Image
         run: |
           export LOCALVERSION=
           [ -n "${TOOLCHAIN:-}" ] && export PATH="$TOOLCHAIN/bin:$PATH"
           make -C k O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image 2>&1 | tail -60
 
-      - name: 8. 校验并打包产物
+      - name: 9. 校验并打包产物
         run: |
           IMG=k/out/arch/arm64/boot/Image
           ls -lh "$IMG"
