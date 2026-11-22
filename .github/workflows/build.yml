@@ -138,13 +138,25 @@ jobs:
           cd k
           cat >> arch/arm64/configs/vendor/lahaina-qgki_defconfig <<'CFG_EOF'
 
+          # KernelSU-Next 的 supercall.c 直接调用 susfs_*，必须把 SUSFS 打开，否则编译报 implicit declaration
+          CONFIG_SUSFS=y
+          CONFIG_SUSFS_SUS_PATH=y
+          CONFIG_SUSFS_SUS_MOUNT=y
+          CONFIG_SUSFS_SUS_KSTAT=y
+          CONFIG_SUSFS_TRY_UMOUNT=y
+          CONFIG_SUSFS_SPOOF_UNAME=y
+          CONFIG_SUSFS_ENABLE_LOG=y
+          CONFIG_SUSFS_HIDE_SUSFS_SYMBOLS=y
+          CONFIG_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_SUSFS_OPEN_REDIRECT=y
+          CONFIG_SUSFS_SUS_MAP=y
           CONFIG_LOCALVERSION="-qgki-gf817ef05c1c2"
           # CONFIG_LOCALVERSION_AUTO is not set
           # 关掉调试信息：只为省内存/磁盘/时间，不影响运行时和符号 CRC
           # CONFIG_DEBUG_INFO is not set
           CFG_EOF
           make O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
-          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE KSU; do
+          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE KSU SUSFS; do
             grep -q "^CONFIG_${o}=y" out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
           done
           grep -E "^CONFIG_(LOCALVERSION|DEBUG_INFO)" out/.config
