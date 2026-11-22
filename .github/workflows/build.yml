@@ -6,51 +6,65 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 240
     steps:
       - name: 1. 腾出磁盘空间
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
           df -h / | tail -1
-          free -g | head -2
 
       - name: 2. 安装依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio rsync clang lld llvm
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev xz-utils cpio rsync clang lld llvm zstd
           for t in ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip clang; do
             command -v $t || echo "警告：缺少 $t"
           done
           clang --version | head -2
 
-      - name: 3. 下载 AOSP clang r563880c（与设备内核完全同版本）
+      - name: 3. 尝试获取 AOSP clang r563880（与设备内核同版本）
         run: |
           BASE="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
           mkdir -p "$HOME/tc"
-          URL="$BASE/+archive/refs/heads/android17-release/clang-r563880c.tar.gz"
-          echo "下载 $URL"
-          if curl -fSL --retry 3 --retry-delay 5 --max-time 900 "$URL" -o /tmp/tc.tar.gz; then
-            echo "解压 ..."
-            tar xzf /tmp/tc.tar.gz -C "$HOME/tc"
-            echo "TOOLCHAIN=$HOME/tc" >> "$GITHUB_ENV"
-            "$HOME/tc/bin/clang" --version | head -1
+          GOT=""
+          for REF in main android16-release android16-qpr1-release android15-release; do
+            echo "--- 尝试 $REF ---"
+            curl -fsSL "$BASE/+/refs/heads/$REF?format=JSON" -o /tmp/list.json 2>/dev/null || { echo "取不到列表"; continue; }
+            sed -i "1s/^)]}'//" /tmp/list.json
+            DIR=$(grep -o '"clang-r563880[a-z]*"' /tmp/list.json | head -1 | tr -d '"')
+            [ -z "$DIR" ] && DIR=$(grep -o '"clang-r5[0-9]*"' /tmp/list.json | sort -u | tail -1 | tr -d '"')
+            echo "候选目录: ${DIR:-无}"
+            [ -z "$DIR" ] && continue
+            if curl -fsSL "$BASE/+archive/refs/heads/$REF/$DIR.tar.gz" -o /tmp/tc.tar.gz && tar xzf /tmp/tc.tar.gz -C "$HOME/tc"; then
+              GOT="$HOME/tc"
+              echo "已解压 $DIR"
+              break
+            fi
+          done
+          if [ -n "$GOT" ] && [ -x "$GOT/bin/clang" ]; then
+            echo "TOOLCHAIN=$GOT" >> "$GITHUB_ENV"
+            "$GOT/bin/clang" --version | head -1
           else
-            echo "!! 下载失败，回退系统 clang"
-            clang --version | head -1
+            echo "没拿到 AOSP 工具链，回退系统 clang"; clang --version | head -1
           fi
 
-      - name: 4. 拉取源码（android-16）
+      - name: 4. 拉取源码（android-16，与你内核同源，保留 KSU/SUSFS）
         run: |
           git clone --depth 1 -b android-16 https://github.com/Gamesmes90/android_kernel_oneplus_sm8350.git k
-          cd k && git log --oneline -1 && grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL) =" Makefile
+          cd k
+          git log --oneline -1
+          grep -E "^(VERSION|PATCHLEVEL|SUBLEVEL) =" Makefile
+          echo -n "defconfig 里 KSU 相关行数: "; grep -c "CONFIG_KSU" arch/arm64/configs/vendor/lahaina-qgki_defconfig
 
-      - name: 5. 初始化 KernelSU
+      - name: 4.5 初始化 KernelSU（仓库里的 drivers/kernelsu 是指向 KernelSU-Next 的软链）
         run: |
           cd k
+          ls -l drivers/kernelsu || true
           chmod +x init_ksu.sh
-          bash ./init_ksu.sh susfs || bash ./init_ksu.sh
-          ls -l drivers/kernelsu/Kconfig || { echo "KernelSU 未初始化"; exit 1; }
-
+          bash ./init_ksu.sh susfs || { echo "susfs 变体失败，改用默认变体"; bash ./init_ksu.sh; }
+          echo "--- 结果 ---"
+          ls -l drivers/kernelsu/Kconfig || { echo "KernelSU 未初始化，Kconfig 会报 can't open drivers/kernelsu/Kconfig"; exit 1; }
+          grep -c kernelsu drivers/Makefile || true
       - name: 6. 打 Droidspaces 补丁
         run: |
           cd k
@@ -131,62 +145,42 @@ jobs:
           PATCH_EOF
           git apply --check /tmp/ds.patch
           git apply /tmp/ds.patch
+          grep -E "^CONFIG_(SYSVIPC|IPC_NS|PID_NS|POSIX_MQUEUE)=y" arch/arm64/configs/vendor/lahaina-qgki_defconfig | sort -u
 
-      - name: 7. 生成配置 + 锁版本 + 关调试信息
-        run: |
-          export LOCALVERSION=
-          cd k
-          cat >> arch/arm64/configs/vendor/lahaina-qgki_defconfig <<'CFG_EOF'
-
-          # KernelSU-Next 的 supercall.c 直接调用 susfs_*，必须把 SUSFS 打开，否则编译报 implicit declaration
-          CONFIG_SUSFS=y
-          CONFIG_SUSFS_SUS_PATH=y
-          CONFIG_SUSFS_SUS_MOUNT=y
-          CONFIG_SUSFS_SUS_KSTAT=y
-          CONFIG_SUSFS_TRY_UMOUNT=y
-          CONFIG_SUSFS_SPOOF_UNAME=y
-          CONFIG_SUSFS_ENABLE_LOG=y
-          CONFIG_SUSFS_HIDE_SUSFS_SYMBOLS=y
-          CONFIG_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          CONFIG_SUSFS_OPEN_REDIRECT=y
-          CONFIG_SUSFS_SUS_MAP=y
-          CONFIG_LOCALVERSION="-qgki-gf817ef05c1c2"
-          # CONFIG_LOCALVERSION_AUTO is not set
-          # 关掉调试信息：只为省内存/磁盘/时间，不影响运行时和符号 CRC
-          # CONFIG_DEBUG_INFO is not set
-          CFG_EOF
-          make O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
-          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE KSU SUSFS; do
-            grep -q "^CONFIG_${o}=y" out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
-          done
-          grep -E "^CONFIG_(LOCALVERSION|DEBUG_INFO)" out/.config
-          make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
-          REL=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)
-          echo "kernelrelease = $REL"
-          [ "$REL" = "5.4.302-qgki-gf817ef05c1c2" ] || { echo "版本号不对"; exit 1; }
-
-      - name: 8. 编译（-j2，完整日志留档）
+      - name: 7. 生成配置 + 锁定版本号
         run: |
           export LOCALVERSION=
           [ -n "${TOOLCHAIN:-}" ] && export PATH="$TOOLCHAIN/bin:$PATH"
-          mkdir -p dist
-          set -o pipefail
-          make -C k O=out ARCH=arm64 LLVM=1 KCFLAGS="-Wno-error" -j2 Image > /tmp/build.log 2>&1 || {
-            echo "===== 编译失败，最后 120 行 ====="
-            tail -120 /tmp/build.log
-            cp /tmp/build.log dist/ 2>/dev/null
-            exit 1
-          }
-          tail -20 /tmp/build.log
-          cp /tmp/build.log dist/
+          cd k
+          cat >> arch/arm64/configs/vendor/lahaina-qgki_defconfig <<'CFG_EOF'
 
-      - name: 9. 校验并打包
+          # 锁定 release：必须与设备现有内核一致，否则厂商模块 vermagic 校验失败
+          CONFIG_LOCALVERSION="-qgki-gf817ef05c1c2"
+          # CONFIG_LOCALVERSION_AUTO is not set
+          CFG_EOF
+          make O=out ARCH=arm64 LLVM=1 vendor/lahaina-qgki_defconfig
+          for o in SYSVIPC IPC_NS PID_NS POSIX_MQUEUE KSU KSU_SUSFS; do
+            grep -q "^CONFIG_${o}=y" out/.config || { echo "缺少 CONFIG_$o"; exit 1; }
+          done
+          grep -E "^CONFIG_(LOCALVERSION|KSU=|KSU_SUSFS=)" out/.config
+          make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
+          REL=$(make -s O=out ARCH=arm64 LLVM=1 kernelrelease)
+          echo "kernelrelease = $REL"
+          [ "$REL" = "5.4.302-qgki-gf817ef05c1c2" ] || { echo "版本号不对，停止"; exit 1; }
+
+      - name: 8. 编译 Image
+        run: |
+          export LOCALVERSION=
+          [ -n "${TOOLCHAIN:-}" ] && export PATH="$TOOLCHAIN/bin:$PATH"
+          make -C k O=out ARCH=arm64 LLVM=1 -j"$(nproc)" Image 2>&1 | tail -60
+
+      - name: 9. 校验并打包产物
         run: |
           IMG=k/out/arch/arm64/boot/Image
           ls -lh "$IMG"
           sha256sum "$IMG"
           strings -a "$IMG" | grep -m1 "^Linux version"
-          strings -a "$IMG" | grep -q "5.4.302-qgki-gf817ef05c1c2" || { echo "版本号不对"; exit 1; }
+          strings -a "$IMG" | grep -q "5.4.302-qgki-gf817ef05c1c2" || { echo "版本号不对，模块会拒载"; exit 1; }
           mkdir -p dist
           cp "$IMG" dist/Image
           cp k/out/.config dist/config.built
@@ -194,9 +188,7 @@ jobs:
           clang --version > dist/clang.txt
           ls -lh dist
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: kernel-dist
           path: dist/
           retention-days: 7
-          if-no-files-found: warn
